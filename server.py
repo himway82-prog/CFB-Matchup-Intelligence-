@@ -106,7 +106,7 @@ def compute():
         if not name:continue
         rows=sorted(byteam[name],key=lambda x:(x['date'] or '',x['game_id'] or 0))
         fields=['points','points_allowed','pass_yds','rush_yds','total_yds','pass_tds','rush_tds','pass_yds_allowed','rush_yds_allowed','total_yds_allowed','pass_tds_allowed','rush_tds_allowed']
-        result[name]={'name':name,'conference':t.get('conference') or 'Independent','games':len(rows),'season':{x:average(rows,x) for x in fields},'last5':{x:average(rows[-5:],x) for x in fields},'logs':rows[-5:]}
+        result[name]={'name':name,'conference':t.get('conference') or 'Independent','games':len(rows),'season':{x:average(rows,x) for x in fields},'last5':{x:average(rows[-5:],x) for x in fields},'last3':{x:average(rows[-3:],x) for x in fields},'logs':rows}
     future=[]
     for g in games:
         if g.get('completed') or not g.get('startDate'):continue
@@ -121,9 +121,14 @@ def compute():
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kw): super().__init__(*args,directory=str(ROOT),**kw)
     def do_GET(self):
-        if self.path.split('?')[0] != '/api/dashboard':return super().do_GET()
+        path=self.path.split('?')[0]
+        if path not in ('/api/dashboard','/api/players'): return super().do_GET()
         try:
-            with LOCK:data=compute()
+            if path=='/api/dashboard':
+                with LOCK:data=compute()
+            else:
+                # Season aggregate endpoint; these totals are NOT game logs or player hit rates.
+                data={'year':YEAR,'players':cached('players_'+str(YEAR),'/stats/player/season',year=YEAR,seasonType='regular'),'source':'CollegeFootballData season player statistics; per-game detail unavailable in this feed'}
             self.send_json(200,data)
         except Exception as exc:self.send_json(503,{'error':str(exc)})
     def send_json(self,status,payload):
@@ -132,6 +137,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Content-Type','application/json; charset=utf-8')
         self.send_header('Cache-Control','no-store')
         self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('Referrer-Policy','no-referrer')
         self.send_header('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
         self.send_header('Content-Length',str(len(b)))
         self.end_headers();self.wfile.write(b)
