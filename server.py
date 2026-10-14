@@ -122,14 +122,37 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kw): super().__init__(*args,directory=str(ROOT),**kw)
     def do_GET(self):
         path=self.path.split('?')[0]
-        if path not in ('/api/dashboard','/api/players'): return super().do_GET()
+        if path not in ('/api/dashboard','/api/players','/api/player-games'): return super().do_GET()
         try:
             if path=='/api/dashboard':
                 with LOCK:data=compute()
+            elif path=='/api/player-games':
+                query=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                team=(query.get('team') or [''])[0].strip()
+                player=(query.get('player') or [''])[0].strip()
+                if not team or not player or len(team)>100 or len(player)>120: raise ValueError('Select a valid team and player')
+                all_games=cached('games_'+str(YEAR),'/games',year=YEAR,seasonType='regular',classification='fbs')
+                games=sorted((g for g in all_games if g.get('completed') and team in (g.get('homeTeam'),g.get('awayTeam'))),key=lambda g:g.get('startDate') or '')[-5:]
+                boxed=cached('playerbox_'+str(YEAR)+'_'+urllib.parse.quote(team,safe='').replace('%','_'),'/games/players',year=YEAR,team=team,seasonType='regular',expiry=TTL)
+                byid={b.get('id'):b for b in boxed}
+                rows=[]
+                for g in games:
+                    found={}
+                    box=byid.get(g.get('id')) or {}
+                    for side in box.get('teams',[]):
+                        if side.get('team')!=team: continue
+                        for cat in side.get('categories',[]):
+                            for typ in cat.get('types',[]):
+                                for ath in typ.get('athletes',[]):
+                                    if str(ath.get('name','')).casefold()==player.casefold():
+                                        found.setdefault(str(cat.get('name','')).lower(),{})[str(typ.get('name','')).upper()]=ath.get('stat')
+                    rows.append({'week':g.get('week'),'date':g.get('startDate'),'opponent':g.get('awayTeam') if g.get('homeTeam')==team else g.get('homeTeam'),'stats':found,'reported':bool(found)})
+                data={'year':YEAR,'team':team,'player':player,'games':rows,'note':'Unreported box scores are marked unavailable, not zero. Last five completed team games.'}
             else:
                 # Season aggregate endpoint; these totals are NOT game logs or player hit rates.
                 data={'year':YEAR,'players':cached('players_'+str(YEAR),'/stats/player/season',year=YEAR,seasonType='regular'),'source':'CollegeFootballData season player statistics; per-game detail unavailable in this feed'}
             self.send_json(200,data)
+        except ValueError as exc:self.send_json(400,{'error':str(exc)})
         except Exception as exc:self.send_json(503,{'error':str(exc)})
     def send_json(self,status,payload):
         b=json.dumps(payload).encode()
